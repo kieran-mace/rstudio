@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+#
+# RStudio TUI Launcher
+#
+# This script launches the RStudio Terminal User Interface.
+# It can either connect to an existing rsession or start a new one.
+#
+
+set -e
+
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TUI_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Default configuration
+RSTUDIO_HOST="${RSTUDIO_SESSION_HOST:-127.0.0.1}"
+RSTUDIO_PORT="${RSTUDIO_SESSION_PORT:-8787}"
+WORKING_DIR="${PWD}"
+START_SESSION=false
+DEMO_MODE=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--host)
+            RSTUDIO_HOST="$2"
+            shift 2
+            ;;
+        -p|--port)
+            RSTUDIO_PORT="$2"
+            shift 2
+            ;;
+        -w|--working-dir)
+            WORKING_DIR="$2"
+            shift 2
+            ;;
+        -s|--start-session)
+            START_SESSION=true
+            shift
+            ;;
+        --demo)
+            DEMO_MODE=true
+            shift
+            ;;
+        --help)
+            echo "RStudio TUI - Terminal User Interface for RStudio"
+            echo ""
+            echo "Usage: rstudio-tui [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  -h, --host HOST          RStudio session host (default: 127.0.0.1)"
+            echo "  -p, --port PORT          RStudio session port (default: 8787)"
+            echo "  -w, --working-dir DIR    Working directory"
+            echo "  -s, --start-session      Start a new rsession if not running"
+            echo "  --demo                   Run in demo mode without R session"
+            echo "  --help                   Show this help message"
+            echo ""
+            echo "Environment Variables:"
+            echo "  RSTUDIO_SESSION_HOST     Override default host"
+            echo "  RSTUDIO_SESSION_PORT     Override default port"
+            echo "  R_HOME                   R installation directory"
+            echo ""
+            echo "Examples:"
+            echo "  rstudio-tui                        # Connect to session on default port"
+            echo "  rstudio-tui -p 8888                # Connect to session on port 8888"
+            echo "  rstudio-tui -s                     # Start new session and connect"
+            echo "  rstudio-tui --demo                 # Run in demo mode"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Check for Python
+if ! command -v python3 &> /dev/null; then
+    echo "Error: Python 3 is required but not found"
+    exit 1
+fi
+
+# Check if TUI package is installed
+if ! python3 -c "import rstudio_tui" 2>/dev/null; then
+    echo "RStudio TUI package not found. Installing..."
+
+    # Try to install from local source
+    if [[ -f "${TUI_DIR}/pyproject.toml" ]]; then
+        pip3 install -e "${TUI_DIR}" --quiet
+    else
+        echo "Error: Could not find rstudio_tui package"
+        echo "Please install it with: pip install rstudio-tui"
+        exit 1
+    fi
+fi
+
+# Start rsession if requested
+if [[ "$START_SESSION" == "true" ]]; then
+    # Check for rsession
+    RSESSION_BIN=""
+
+    # Try to find rsession in common locations
+    for path in \
+        "/usr/lib/rstudio-server/bin/rsession" \
+        "/usr/lib/rstudio/bin/rsession" \
+        "/opt/rstudio/bin/rsession" \
+        "$(which rsession 2>/dev/null)"; do
+        if [[ -x "$path" ]]; then
+            RSESSION_BIN="$path"
+            break
+        fi
+    done
+
+    if [[ -z "$RSESSION_BIN" ]]; then
+        echo "Warning: rsession not found. Running in demo mode."
+        DEMO_MODE=true
+    else
+        # Find an available port
+        RSTUDIO_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()')
+
+        echo "Starting rsession on port ${RSTUDIO_PORT}..."
+
+        # Start rsession in background
+        export RS_SESSION_PORT="${RSTUDIO_PORT}"
+        "${RSESSION_BIN}" \
+            --standalone=1 \
+            --www-port="${RSTUDIO_PORT}" \
+            --user-identity="${USER}" \
+            --session-timeout-minutes=0 \
+            &
+
+        RSESSION_PID=$!
+
+        # Wait for rsession to be ready
+        echo "Waiting for rsession to start..."
+        for i in {1..30}; do
+            if curl -s "http://${RSTUDIO_HOST}:${RSTUDIO_PORT}/rpc/ping" > /dev/null 2>&1; then
+                echo "rsession is ready."
+                break
+            fi
+            sleep 0.5
+        done
+
+        # Cleanup rsession on exit
+        trap "kill ${RSESSION_PID} 2>/dev/null" EXIT
+    fi
+fi
+
+# Build command arguments
+ARGS=()
+ARGS+=(--host "${RSTUDIO_HOST}")
+ARGS+=(--port "${RSTUDIO_PORT}")
+ARGS+=(--working-dir "${WORKING_DIR}")
+
+if [[ "$DEMO_MODE" == "true" ]]; then
+    ARGS+=(--demo)
+fi
+
+# Launch the TUI
+exec python3 -m rstudio_tui.cli "${ARGS[@]}"

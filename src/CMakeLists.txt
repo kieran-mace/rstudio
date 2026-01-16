@@ -27,6 +27,12 @@ endif()
 add_subdirectory(cpp)
 add_subdirectory(node)
 
+# TUI frontend (optional, requires Python 3.9+)
+option(RSTUDIO_BUILD_TUI "Build the Terminal User Interface" OFF)
+if(RSTUDIO_BUILD_TUI)
+   add_subdirectory(tui)
+endif()
+
 # Make GWT build before everything else.
 function(get_all_targets _result _dir)
     get_property(_subdirs DIRECTORY "${_dir}" PROPERTY SUBDIRECTORIES)

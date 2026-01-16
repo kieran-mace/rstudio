@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#
+# RStudio Unified Launcher
+#
+# This script can launch RStudio in either GUI or TUI mode.
+# Usage: rstudio-launcher [--tui|--gui] [options...]
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Detect the mode
+MODE="gui"
+ARGS=()
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --tui|-t)
+            MODE="tui"
+            shift
+            ;;
+        --gui|-g)
+            MODE="gui"
+            shift
+            ;;
+        --help)
+            echo "RStudio Unified Launcher"
+            echo ""
+            echo "Usage: rstudio-launcher [--tui|--gui] [options...]"
+            echo ""
+            echo "Modes:"
+            echo "  --gui, -g    Launch RStudio Desktop (default)"
+            echo "  --tui, -t    Launch RStudio TUI (terminal interface)"
+            echo ""
+            echo "All other options are passed to the selected mode."
+            echo ""
+            echo "Examples:"
+            echo "  rstudio-launcher                    # Start GUI"
+            echo "  rstudio-launcher --tui              # Start TUI"
+            echo "  rstudio-launcher --tui -p 8888      # Start TUI on port 8888"
+            echo "  rstudio-launcher myfile.R           # Open file in GUI"
+            exit 0
+            ;;
+        *)
+            ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Check for DISPLAY to auto-detect TUI mode
+if [[ -z "${DISPLAY}" && -z "${WAYLAND_DISPLAY}" && "$MODE" == "gui" ]]; then
+    # No display available, suggest TUI mode
+    echo "No display available. Use --tui to run in terminal mode."
+    echo "Example: rstudio-launcher --tui"
+    exit 1
+fi
+
+# Launch the appropriate mode
+if [[ "$MODE" == "tui" ]]; then
+    # Launch TUI
+    if command -v rstudio-tui &> /dev/null; then
+        exec rstudio-tui "${ARGS[@]}"
+    elif [[ -x "${SCRIPT_DIR}/rstudio-tui" ]]; then
+        exec "${SCRIPT_DIR}/rstudio-tui" "${ARGS[@]}"
+    else
+        echo "Error: rstudio-tui not found"
+        echo "Please install it with: pip install rstudio-tui"
+        exit 1
+    fi
+else
+    # Launch GUI
+    # Try to find rstudio binary in common locations
+    RSTUDIO_BIN=""
+
+    for path in \
+        "/usr/bin/rstudio" \
+        "/usr/local/bin/rstudio" \
+        "/opt/rstudio/bin/rstudio" \
+        "$(which rstudio 2>/dev/null)"; do
+        if [[ -x "$path" ]]; then
+            RSTUDIO_BIN="$path"
+            break
+        fi
+    done
+
+    if [[ -z "$RSTUDIO_BIN" ]]; then
+        echo "Error: RStudio Desktop not found"
+        echo "Use --tui to run in terminal mode instead."
+        exit 1
+    fi
+
+    exec "$RSTUDIO_BIN" "${ARGS[@]}"
+fi
