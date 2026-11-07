@@ -122,11 +122,28 @@ public class XTermNative extends JavaScriptObject
       return this.rstudioFitAddon_.proposeDimensions() || { cols: 0, rows: 0 };
    }-*/;
 
+   /**
+    * Give the terminal keyboard focus. GHOSTTY_IMP: ghostty-web focuses its
+    * outer element; focus its hidden textarea instead, as xterm.js did. Keys
+    * reach the terminal either way (its key handler is on the outer element),
+    * but the textarea is where text input methods (IME) compose, and it is
+    * how the desktop app tells that the terminal has focus (see
+    * src/node/desktop/src/main/context-menu.ts).
+    */
    public final native void focus() /*-{
-      this.focus();
+      @org.rstudio.studio.client.workbench.views.terminal.xterm.XTermNative::focusInput(*)(this);
+   }-*/;
+
+   private static native void focusInput(XTermNative term) /*-{
+      if (term.textarea)
+         term.textarea.focus({ preventScroll: true });
+      else
+         term.focus();
    }-*/;
 
    public final native void blur() /*-{
+      if (this.textarea)
+         this.textarea.blur();
       this.blur();
    }-*/;
 
@@ -159,7 +176,7 @@ public class XTermNative extends JavaScriptObject
    private static native void clearNewEmulator(XTermNative term) /*-{
       // GHOSTTY_IMP: straight to the WebAssembly emulator, as this is not output
       if (term.wasmTerm)
-         term.wasmTerm.write("[2J[H");
+         term.wasmTerm.write("\x1b[2J\x1b[H");
    }-*/;
 
    public final native void clear() /*-{
@@ -591,13 +608,34 @@ public class XTermNative extends JavaScriptObject
             pasteEventSeen = true;
          }, true);
 
+         // Keyboard focus belongs in the hidden textarea (see focus()), but
+         // the outer element is focusable too: ghostty-web focuses it, and so
+         // do a click on its padding and Tab. Pass focus on to the textarea.
+         container.addEventListener("focus", function(event) {
+            if (event.target === container && nativeTerm_.textarea)
+               nativeTerm_.textarea.focus({ preventScroll: true });
+         });
+
          // With "Tab moves focus" on, let Tab leave the terminal. The
          // terminal's key handler would either send it to the shell or, if
          // told the key was handled, cancel the browser's focus change, so
-         // keep the key from reaching it at all.
+         // keep the key from reaching it at all. Shift+Tab from the textarea
+         // would stop at the outer element, which precedes it; take that out
+         // of the tab order for the one key.
          container.addEventListener("keydown", function(event) {
-            if (event.keyCode === 9 && nativeTerm_.tabMovesFocus)
-               event.stopImmediatePropagation();
+            if (event.keyCode !== 9 || !nativeTerm_.tabMovesFocus)
+               return;
+            event.stopImmediatePropagation();
+            if (event.shiftKey && event.target !== container) {
+               var tabIndex = container.getAttribute("tabindex");
+               container.setAttribute("tabindex", "-1");
+               $wnd.setTimeout(function() {
+                  if (tabIndex === null)
+                     container.removeAttribute("tabindex");
+                  else
+                     container.setAttribute("tabindex", tabIndex);
+               }, 0);
+            }
          }, true);
 
          // Unlike xterm.js, ghostty-web's custom key handler returns true for
@@ -653,7 +691,7 @@ public class XTermNative extends JavaScriptObject
             return false;
          });
 
-         nativeTerm_.focus();
+         @org.rstudio.studio.client.workbench.views.terminal.xterm.XTermNative::focusInput(*)(nativeTerm_);
          return nativeTerm_;
       } catch (error) {
          console.error("Error creating terminal: " + error);

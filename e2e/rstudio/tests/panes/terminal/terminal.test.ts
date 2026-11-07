@@ -2,13 +2,15 @@ import { test, expect } from '@fixtures/rstudio.fixture';
 import { TIMEOUTS } from '@utils/constants';
 import { ConsolePaneActions } from '@actions/console_pane.actions';
 import { AceEditor } from '@pages/ace_editor.page';
-import { clearPref, executeCommand, getPref, setPref } from '@utils/commands';
+import { executeInConsole } from '@pages/console_pane.page';
+import { executeCommand, getPref } from '@utils/commands';
 import { useSuiteSandbox } from '@utils/sandbox';
 import { rStringLiteral } from '@utils/r';
 import {
   XTERM_SELECTOR,
   captureResult,
   killAllTerminals,
+  focusTerminal,
   openTerminal,
   renderedTerminalText,
   retryTerminalInput,
@@ -235,11 +237,15 @@ test.describe.serial('Terminal pane', () => {
   });
 
   test('changing the editor theme repaints the terminal in the new colors', async ({ rstudioPage: page }) => {
+    // A pref change alone does not re-theme a running session;
+    // rstudioapi::applyTheme() does, as Global Options does.
+    const applyTheme = (name: string) =>
+      executeInConsole(page, `rstudioapi::applyTheme(${rStringLiteral(name)})`, { wait: true });
     const original = (await getPref(page, 'editor_theme')) as string | null;
     await killAllTerminals(page);
 
     try {
-      await setPref(page, 'editor_theme', 'Textmate (default)');
+      await applyTheme('Textmate (default)');
       await openTerminal(page);
       await expect.poll(async () => {
         const { drawn, theme } = await terminalBackground(page);
@@ -250,14 +256,14 @@ test.describe.serial('Terminal pane', () => {
       // The emulator keeps the colors it was created with; the renderer
       // translates them to the new theme's as it draws (ghostty-theme.js).
       // The terminal picks up a theme change after a short delay.
-      await setPref(page, 'editor_theme', 'Tomorrow Night');
+      await applyTheme('Tomorrow Night');
+      await focusTerminal(page);
       await expect.poll(async () => {
         const { drawn, theme } = await terminalBackground(page);
         return theme.join() !== light.join() && drawn.join() === theme.join();
       }, { timeout: TIMEOUTS.consoleReady }).toBe(true);
     } finally {
-      if (original) await setPref(page, 'editor_theme', original);
-      else await clearPref(page, 'editor_theme');
+      await applyTheme(original ?? 'Textmate (default)').catch(() => {});
     }
   });
 

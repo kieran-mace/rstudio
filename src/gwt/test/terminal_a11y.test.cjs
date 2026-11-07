@@ -32,6 +32,8 @@ class FakeElement
       this.textContent = "";
    }
    setAttribute(name, value) { this.attributes[name] = String(value); }
+   getAttribute(name) { return this.attributes[name] ?? null; }
+   removeAttribute(name) { delete this.attributes[name]; }
    appendChild(child) { child.parentNode = this; this.childNodes.push(child); return child; }
    removeChild(child)
    {
@@ -153,6 +155,22 @@ test("update() batches output until it settles", async t => {
    assert.deepEqual(tree(), [" ", " ", " ", " "]);
    await new Promise(resolve => setTimeout(resolve, 250));
    assert.deepEqual(tree(), ["a", "b", " ", " "]);
+});
+
+test("the terminal's element stops being an editable textbox", t => {
+   const term = new Terminal({ cols: 10, rows: 2, ghostty });
+   term.wasmTerm = ghostty.createTerminal(10, 2);
+   t.after(() => term.wasmTerm.free());
+   const container = new FakeElement(createDocument(), "div");
+   // as ghostty-web's Terminal.open() leaves it
+   container.setAttribute("contenteditable", "true");
+   container.setAttribute("role", "textbox");
+   container.setAttribute("aria-multiline", "true");
+   container.setAttribute("aria-label", "Terminal input");
+
+   const mirror = new TerminalAccessibility(term, container, "Terminal 2");
+   t.after(() => mirror.dispose());
+   assert.deepEqual(container.attributes, { role: "group", "aria-label": "Terminal 2" });
 });
 
 test("dispose() removes the mirror", t => {

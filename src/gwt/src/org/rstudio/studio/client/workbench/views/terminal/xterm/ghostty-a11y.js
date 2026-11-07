@@ -108,6 +108,19 @@ function TerminalAccessibility(term, container, label)
    hide(log);
    this._log = log;
 
+   // GHOSTTY_IMP: ghostty-web makes the terminal's element an editable
+   // textbox, inside which a screen reader would read the mirror as the
+   // field's text rather than as a list it can move through. Make it a
+   // labelled group instead; its key handling does not depend on either
+   // attribute, and its hidden textarea remains the text input.
+   if (container.getAttribute("role") === "textbox")
+   {
+      container.removeAttribute("contenteditable");
+      container.removeAttribute("aria-multiline");
+      container.setAttribute("role", "group");
+      container.setAttribute("aria-label", label);
+   }
+
    container.appendChild(tree);
    container.appendChild(log);
 
