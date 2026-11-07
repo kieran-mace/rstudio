@@ -13,6 +13,8 @@ const { FileLinkProvider } = globalThis.RStudioFileLinks;
 
 let ghostty;
 test.before(async () => {
+   // the module loader resolves its embedded URL against self.location
+   globalThis.self ??= globalThis;
    ghostty = await Ghostty.load();
 });
 
@@ -26,6 +28,10 @@ function createTerminal(t, text, cols = 80)
    const terminal = new Terminal({ cols, rows: 10, ghostty });
    terminal.wasmTerm = ghostty.createTerminal(cols, 10);
    t.after(() => terminal.wasmTerm.free());
+
+   // as XTermNative.clearNewEmulator() does: an emulator created after a
+   // narrower one was freed otherwise shows leftover memory in blank cells
+   write(terminal, "\x1b[2J\x1b[H");
    write(terminal, text);
    return terminal;
 }

@@ -1,7 +1,7 @@
 // Select All in the Terminal pane's desktop right-click menu (#19390).
 //
-// The browser's own select-all, run over the terminal, only selects xterm's
-// hidden helper textarea. The desktop menu instead sends an
+// The browser's own select-all, run over the terminal, only selects the
+// terminal's hidden helper textarea. The desktop menu instead sends an
 // 'rstudio-terminal-select-all' event to that textarea (see
 // src/node/desktop/src/main/context-menu.ts), and the terminal answers it by
 // selecting its buffer. Electron's native menu can't be driven from here, so
@@ -24,7 +24,8 @@ import {
 
 /**
  * The text a copy would put on the clipboard, read from the copy event rather
- * than the clipboard itself. xterm's copy handler fills in the event's data.
+ * than the clipboard itself. The terminal's copy handler fills in the event's
+ * data.
  */
 async function copiedText(page: Page): Promise<string> {
   return page.evaluate(() => {

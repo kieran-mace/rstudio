@@ -2,7 +2,7 @@ import { test, expect } from '@fixtures/rstudio.fixture';
 import { TIMEOUTS } from '@utils/constants';
 import { ConsolePaneActions } from '@actions/console_pane.actions';
 import { AceEditor } from '@pages/ace_editor.page';
-import { clearPref, executeCommand, setPref } from '@utils/commands';
+import { clearPref, executeCommand, getPref, setPref } from '@utils/commands';
 import { useSuiteSandbox } from '@utils/sandbox';
 import { rStringLiteral } from '@utils/r';
 import {
@@ -10,85 +10,30 @@ import {
   captureResult,
   killAllTerminals,
   openTerminal,
+  renderedTerminalText,
   retryTerminalInput,
 } from '@utils/terminal';
 import type { Page } from 'playwright';
 
-// The WebGL addon appends its webgl2 render canvas plus a 2D link layer to
-// the xterm screen element (the DOM renderer uses no canvas). Find the render
-// canvas -- skip canvases already holding a 2D context, then require an
-// existing webgl2 context (getContext returns null for a mismatched type) --
-// and force a context loss on it. On loss the addon waits ~3s for the browser
-// to restore the context (WEBGL_lose_context never does without an explicit
-// restoreContext()), then fires onContextLoss; RStudio must dispose the addon
-// and fall back to the DOM renderer or the terminal stops painting (#18393).
-// The addon attaches asynchronously after the widget appears, and the caller
-// has established that this environment supports WebGL2, so a render canvas
-// that never attaches is a product failure: the poll fails the test rather
-// than skipping it.
-async function loseWebGLContext(page: Page): Promise<void> {
-  await expect
-    .poll(
-      () =>
-        page.evaluate(() => {
-          const canvases = document.querySelectorAll<HTMLCanvasElement>('.xterm-screen canvas');
-          for (const el of canvases) {
-            if (el.getContext('2d')) continue;
-            const gl = el.getContext('webgl2');
-            if (gl) {
-              const ext = gl.getExtension('WEBGL_lose_context');
-              if (!ext) throw new Error('WEBGL_lose_context extension unavailable');
-              ext.loseContext();
-              return true;
-            }
-          }
-          return false;
-        }),
-      {
-        message: 'WebGL2 is available but the addon render canvas never attached',
-        timeout: TIMEOUTS.consoleReady,
-      },
-    )
-    .toBe(true);
-}
-
-// Type a command whose *output* contains a marker that the echoed command
-// line does not (the quotes split it), so the assertion can only match real
-// rendered output. Assert on the terminal's rendered DOM rows, not
-// rstudioapi::terminalBuffer(): the server-side buffer still receives output
-// when client rendering is broken, which is exactly the bug. Retyping cannot
-// mask that bug: nothing typed shows up while rendering is broken.
-async function expectTerminalRenders(page: Page, markerPrefix: string): Promise<void> {
-  await page.locator(XTERM_SELECTOR).click();
-
-  await retryTerminalInput(
-    page,
-    async () => {
-      await page.keyboard.type(`echo "${markerPrefix}""loss_ok"`);
-      await page.keyboard.press('Enter');
-    },
-    () =>
-      expect
-        .poll(
-          async () => {
-            // .xterm-rows only exists under the DOM renderer, so this throws
-            // while the dead WebGL renderer is still in place -- report that
-            // as "nothing rendered" and keep polling until the fallback
-            // happens.
-            const text = await page
-              .locator('.xterm-rows')
-              .innerText()
-              .catch(() => '');
-            // innerText yields one line per xterm row and the hard wrap can
-            // land anywhere depending on prompt width, so strip whitespace;
-            // also strip U+00B7, seen in terminal-derived text on some
-            // platforms (see the send-to-editor test above).
-            return text.replace(/[\s\u00B7]+/g, '');
-          },
-          { timeout: TIMEOUTS.consoleReady },
-        )
-        .toContain(`${markerPrefix}loss_ok`),
-  );
+/**
+ * The color the visible terminal's canvas shows at the centre of its bottom
+ * right cell -- below any output, so it is drawn in the terminal's background
+ * -- along with the background the renderer was given, both as [r, g, b].
+ */
+async function terminalBackground(page: Page): Promise<{ drawn: number[]; theme: number[] }> {
+  return page.locator(`${XTERM_SELECTOR}:visible`).evaluate((element) => {
+    const term = (element as any).rstudioTerminal;
+    const canvas = element.querySelector('canvas')!;
+    const scale = canvas.width / canvas.getBoundingClientRect().width;
+    const x = Math.floor((term.cols - 0.5) * term.renderer.charWidth * scale);
+    const y = Math.floor((term.rows - 0.5) * term.renderer.charHeight * scale);
+    const pixel = canvas.getContext('2d')!.getImageData(x, y, 1, 1).data;
+    const probe = document.createElement('canvas').getContext('2d')!;
+    probe.fillStyle = term.renderer.theme.background;
+    probe.fillRect(0, 0, 1, 1);
+    const theme = probe.getImageData(0, 0, 1, 1).data;
+    return { drawn: [pixel[0], pixel[1], pixel[2]], theme: [theme[0], theme[1], theme[2]] };
+  });
 }
 
 // Sandbox for file-creation test (terminal cwd is its own shell, so we
@@ -113,9 +58,9 @@ test.describe.serial('Terminal pane', () => {
 
     const xterm = page.locator(XTERM_SELECTOR);
     const box = await xterm.boundingBox();
-    expect(box, 'xterm widget should have a bounding box').not.toBeNull();
-    expect(box!.width, 'xterm width').toBeGreaterThan(0);
-    expect(box!.height, 'xterm height').toBeGreaterThan(0);
+    expect(box, 'terminal widget should have a bounding box').not.toBeNull();
+    expect(box!.width, 'terminal width').toBeGreaterThan(0);
+    expect(box!.height, 'terminal height').toBeGreaterThan(0);
   });
 
   test('closing a terminal terminates its shell process', async ({ rstudioPage: page }) => {
@@ -149,10 +94,10 @@ test.describe.serial('Terminal pane', () => {
     await killAllTerminals(page);
     await openTerminal(page);
 
-    // After openTerminal returns, the terminal tab is selected and xterm
-    // is focused. Type the command via the page keyboard, then wait for the
+    // After openTerminal returns, the terminal tab is selected and the
+    // terminal is focused. Type the command via the page keyboard, then wait for the
     // terminal buffer to include the result line. Poll via
-    // rstudioapi::terminalBuffer -- the xterm canvas isn't directly readable.
+    // rstudioapi::terminalBuffer, the server's copy of the output.
     await retryTerminalInput(
       page,
       async () => {
@@ -271,43 +216,48 @@ test.describe.serial('Terminal pane', () => {
     );
   });
 
-  test('terminal keeps rendering after WebGL context loss', async ({ rstudioPage: page }) => {
+  test('output reaches the terminal emulator', async ({ rstudioPage: page }) => {
+    await killAllTerminals(page);
+    await openTerminal(page);
+
+    // Read the client's emulator, not rstudioapi::terminalBuffer(): the
+    // server-side buffer receives output even when the client shows nothing.
+    // The quotes split the marker, so only the output contains it whole.
+    await retryTerminalInput(
+      page,
+      async () => {
+        await page.keyboard.type('echo "pw_""shown"');
+        await page.keyboard.press('Enter');
+      },
+      () => expect.poll(() => renderedTerminalText(page), { timeout: TIMEOUTS.consoleReady })
+        .toContain('pw_shown'),
+    );
+  });
+
+  test('changing the editor theme repaints the terminal in the new colors', async ({ rstudioPage: page }) => {
+    const original = (await getPref(page, 'editor_theme')) as string | null;
     await killAllTerminals(page);
 
-    // Skip only when the environment cannot create WebGL2 contexts at all
-    // (no GPU and no software rasterizer) -- then the addon can never
-    // activate and context loss cannot occur. Capability is probed on a
-    // detached canvas, independent of the addon, so that "RStudio failed to
-    // enable WebGL in a capable environment" reads as a test failure (in
-    // loseWebGLContext) rather than an environment skip.
-    const webglCapable = await page.evaluate(
-      () => !!document.createElement('canvas').getContext('webgl2'),
-    );
-    test.skip(!webglCapable, 'environment cannot create WebGL2 contexts');
-
     try {
-      // The "canvas" renderer preference (the default) maps to the xterm.js
-      // WebGL addon. Set it explicitly so this test doesn't depend on pref
-      // drift from earlier tests.
-      await setPref(page, 'terminal_renderer', 'canvas');
+      await setPref(page, 'editor_theme', 'Textmate (default)');
       await openTerminal(page);
+      await expect.poll(async () => {
+        const { drawn, theme } = await terminalBackground(page);
+        return drawn.join() === theme.join() && theme.join() !== '0,0,0';
+      }, { timeout: TIMEOUTS.consoleReady }).toBe(true);
+      const light = (await terminalBackground(page)).theme;
 
-      await loseWebGLContext(page);
-      await expectTerminalRenders(page, 'pw_ctx1');
-
-      // Re-enable WebGL on the same terminal (dom -> canvas reloads the
-      // addon) and lose the context again. This exercises the second
-      // subscription: unloadWebGLAddon must clear its handler-installed flag
-      // during the first fallback, or the reloaded addon has no context-loss
-      // handler and the next loss breaks the terminal again.
-      await setPref(page, 'terminal_renderer', 'dom');
-      await setPref(page, 'terminal_renderer', 'canvas');
-      await loseWebGLContext(page);
-      await expectTerminalRenders(page, 'pw_ctx2');
+      // The emulator keeps the colors it was created with; the renderer
+      // translates them to the new theme's as it draws (ghostty-theme.js).
+      // The terminal picks up a theme change after a short delay.
+      await setPref(page, 'editor_theme', 'Tomorrow Night');
+      await expect.poll(async () => {
+        const { drawn, theme } = await terminalBackground(page);
+        return theme.join() !== light.join() && drawn.join() === theme.join();
+      }, { timeout: TIMEOUTS.consoleReady }).toBe(true);
     } finally {
-      // canvas is the schema default, but clear the user-layer value so the
-      // rest of the run keeps default layering.
-      await clearPref(page, 'terminal_renderer');
+      if (original) await setPref(page, 'editor_theme', original);
+      else await clearPref(page, 'editor_theme');
     }
   });
 

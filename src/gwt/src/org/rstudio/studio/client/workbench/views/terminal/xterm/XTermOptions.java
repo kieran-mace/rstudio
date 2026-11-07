@@ -22,8 +22,9 @@ import jsinterop.annotations.JsType;
  * Terminal options, as taken by ghostty-web's (xterm.js-compatible) Terminal.
  *
  * ghostty-web uses cursorBlink, theme, fontFamily, fontSize, smoothScrollDuration,
- * allowTransparency and scrollback; the remaining fields are xterm.js options it
- * ignores, kept so the options read the same to either emulator.
+ * allowTransparency and scrollback. screenReaderMode turns on RStudio's own screen
+ * reader support (ghostty-a11y.js). lineHeight, minimumContrastRatio and
+ * customGlyphs are xterm.js options ghostty-web ignores.
  */
 @JsType(isNative = true, namespace = JsPackage.GLOBAL, name = "Object")
 public class XTermOptions

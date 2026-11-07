@@ -27,6 +27,12 @@ public interface XTermResources extends ClientBundle
    @Source("ghostty-web.js")
    StaticDataResource ghosttyjs();
 
+   @Source("ghostty-theme.js")
+   StaticDataResource themejs();
+
+   @Source("ghostty-a11y.js")
+   StaticDataResource accessibilityjs();
+
    @Source("file-links.js")
    StaticDataResource filelinksjs();
 }

@@ -103,7 +103,8 @@ public class XTermWidget extends Widget
       load(() -> {
          Scheduler.get().scheduleDeferred(() -> {
             // Create and attach the native terminal object to this Widget
-            terminal_ = XTermNative.createTerminal(getElement(), options_, showWebLinks_, tabMovesFocus_);
+            terminal_ = XTermNative.createTerminal(getElement(), options_, showWebLinks_, tabMovesFocus_,
+                                                   constants_.terminalText());
             terminal_.addClass("ace_editor");
             terminal_.addClass(FontSizer.getNormalFontSizeClass());
 
@@ -492,13 +493,15 @@ public class XTermWidget extends Widget
    {
       terminalCssLoader_.addCallback(() ->
             ghosttyLoader_.addCallback(() ->
-               fileLinksLoader_.addCallback(() ->
-                  XTermNative.initialize(
-                     () -> {
-                        if (command != null)
-                           command.execute();
-                     },
-                     error -> Debug.log("Error loading terminal emulator: " + error)))));
+               themeLoader_.addCallback(() ->
+                  accessibilityLoader_.addCallback(() ->
+                     fileLinksLoader_.addCallback(() ->
+                        XTermNative.initialize(
+                           () -> {
+                              if (command != null)
+                                 command.execute();
+                           },
+                           error -> Debug.log("Error loading terminal emulator: " + error)))))));
    }
 
    public void refresh()
@@ -514,6 +517,12 @@ public class XTermWidget extends Widget
 
    private static final ExternalJavaScriptLoader ghosttyLoader_ =
          new ExternalJavaScriptLoader(XTermResources.INSTANCE.ghosttyjs().getSafeUri().asString());
+
+   private static final ExternalJavaScriptLoader themeLoader_ =
+         new ExternalJavaScriptLoader(XTermResources.INSTANCE.themejs().getSafeUri().asString());
+
+   private static final ExternalJavaScriptLoader accessibilityLoader_ =
+         new ExternalJavaScriptLoader(XTermResources.INSTANCE.accessibilityjs().getSafeUri().asString());
 
    private static final ExternalJavaScriptLoader fileLinksLoader_ =
          new ExternalJavaScriptLoader(XTermResources.INSTANCE.filelinksjs().getSafeUri().asString());

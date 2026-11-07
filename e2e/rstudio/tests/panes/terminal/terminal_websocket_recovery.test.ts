@@ -8,7 +8,9 @@ import {
   focusTerminal,
   killAllTerminals,
   openTerminal,
+  renderedTerminalText,
   retryTerminalInput,
+  XTERM_SELECTOR,
 } from '@utils/terminal';
 
 // Three unanswered probes, each given another 10s interval to arrive, take
@@ -58,9 +60,8 @@ async function installTerminalInterceptor(page: Page) {
 
 async function renderedText(page: Page): Promise<string> {
   // Server-side terminalBuffer still grows when the client is broken. Read
-  // the actual DOM renderer and normalize xterm's arbitrary hard wrapping.
-  return (await page.locator('.xterm:visible .xterm-rows').innerText())
-    .replace(/[\s\u00B7]+/g, '');
+  // the client's emulator, with its arbitrary hard wrapping normalized.
+  return renderedTerminalText(page);
 }
 
 async function expectOutput(page: Page, marker: string): Promise<void> {
@@ -102,13 +103,11 @@ test.describe.serial('Terminal WebSocket recovery', () => {
   test.beforeEach(async ({ rstudioPage: page }) => {
     await killAllTerminals(page);
     await setPref(page, 'terminal_websockets', true);
-    await setPref(page, 'terminal_renderer', 'dom');
   });
 
   test.afterEach(async ({ rstudioPage: page }) => {
     await killAllTerminals(page);
     await clearPref(page, 'terminal_websockets');
-    await clearPref(page, 'terminal_renderer');
     await executeCommand(page, 'activateConsole');
   });
 
@@ -130,7 +129,7 @@ test.describe.serial('Terminal WebSocket recovery', () => {
       expect(Number(pid)).toBeGreaterThan(0);
 
       await executeCommand(page, 'newTerminal');
-      await expect(page.locator('.xterm')).toHaveCount(2, { timeout: TIMEOUTS.consoleReady });
+      await expect(page.locator(XTERM_SELECTOR)).toHaveCount(2, { timeout: TIMEOUTS.consoleReady });
       await focusTerminal(page);
       await warmUpShell(page);
       await page.locator('#rstudio_tb_previousterminal').click();

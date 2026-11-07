@@ -72,6 +72,8 @@ public class XTermNative extends JavaScriptObject
     */
    public final native void fit() /*-{
       this.rstudioFitAddon_.fit();
+      if (this.rstudioAccessibility_)
+         this.rstudioAccessibility_.update();
    }-*/;
 
    /**
@@ -106,6 +108,9 @@ public class XTermNative extends JavaScriptObject
       } finally {
          term.rstudioWriting_ = false;
       }
+
+      if (term.rstudioAccessibility_)
+         term.rstudioAccessibility_.update();
    }-*/;
 
    /**
@@ -134,15 +139,33 @@ public class XTermNative extends JavaScriptObject
    }-*/;
 
    public final native void reset() /*-{
+      // rebuilds the emulator from the options it was created with; the
+      // renderer, and so the current theme, carries over
       this.reset();
+      @org.rstudio.studio.client.workbench.views.terminal.xterm.XTermNative::clearNewEmulator(*)(this);
+      if (this.rstudioAccessibility_)
+         this.rstudioAccessibility_.update();
+   }-*/;
 
-      // reset() rebuilds the emulator from the options it was created with
-      if (this.rstudioTheme_)
-         @org.rstudio.studio.client.workbench.views.terminal.xterm.XTermNative::applyTheme(*)(this, this.rstudioTheme_);
+   /**
+    * Work around a ghostty-web 0.4.0 bug: an emulator created after another
+    * has been freed can show leftover memory as garbage characters in its
+    * blank cells, on screen and later in its scrollback, if it is wider than
+    * the freed one. Erasing the screen once, before any output, initializes
+    * those cells; with it, a randomized stress test of creating, resizing,
+    * writing to and freeing emulators found no garbage. Call right after the
+    * terminal creates its emulator, i.e. after open() and reset().
+    */
+   private static native void clearNewEmulator(XTermNative term) /*-{
+      // GHOSTTY_IMP: straight to the WebAssembly emulator, as this is not output
+      if (term.wasmTerm)
+         term.wasmTerm.write("[2J[H");
    }-*/;
 
    public final native void clear() /*-{
       this.clear();
+      if (this.rstudioAccessibility_)
+         this.rstudioAccessibility_.update();
    }-*/;
 
    public final native void addClass(String classStr) /*-{
@@ -250,71 +273,18 @@ public class XTermNative extends JavaScriptObject
    }-*/;
 
    /**
-    * Change the terminal's colors, including for output already shown.
+    * Change the terminal's colors, including for output already shown (see
+    * ghostty-theme.js for how).
     */
    public final native void updateTheme(XTermTheme theme) /*-{
-      this.rstudioTheme_ = theme;
-      @org.rstudio.studio.client.workbench.views.terminal.xterm.XTermNative::applyTheme(*)(this, theme);
-   }-*/;
-
-   /**
-    * ghostty-web takes its colors from the options it was created with, and
-    * ignores (with a warning) a theme set later. Instead, give the renderer
-    * the new theme and give the emulator the new palette and default colors
-    * through the escape sequences programs use to change them (OSC 4, 10, 11
-    * and 12), so cells already on screen pick them up as well.
-    */
-   private static native void applyTheme(XTermNative term, XTermTheme theme) /*-{
-      // GHOSTTY_IMP: the canvas renderer and the WebAssembly emulator
-      if (!term.renderer || !term.wasmTerm)
+      if (!this.rstudioThemeTracker_)
          return;
 
-      term.renderer.setTheme(theme);
+      this.rstudioThemeTracker_.setTheme(theme);
 
-      var toHex = function(color) {
-         if (!color)
-            return null;
-         if (/^#[0-9a-fA-F]{6}$/.test(color))
-            return color;
-         if (/^#[0-9a-fA-F]{3}$/.test(color))
-            return "#" + color.charAt(1) + color.charAt(1) + color.charAt(2) +
-                         color.charAt(2) + color.charAt(3) + color.charAt(3);
-         var rgb = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(color);
-         if (!rgb)
-            return null;
-         var hex = "#";
-         for (var i = 1; i <= 3; i++) {
-            var part = Math.min(255, parseInt(rgb[i], 10)).toString(16);
-            hex += part.length === 1 ? "0" + part : part;
-         }
-         return hex;
-      };
-
-      var sequences = "";
-      var osc = function(code, color) {
-         var hex = toHex(color);
-         if (hex)
-            sequences += "\x1b]" + code + ";" + hex + "\x1b\\";
-      };
-
-      var palette = [
-         theme.black, theme.red, theme.green, theme.yellow,
-         theme.blue, theme.magenta, theme.cyan, theme.white,
-         theme.brightBlack, theme.brightRed, theme.brightGreen, theme.brightYellow,
-         theme.brightBlue, theme.brightMagenta, theme.brightCyan, theme.brightWhite
-      ];
-      for (var i = 0; i < palette.length; i++)
-         osc("4;" + i, palette[i]);
-      osc("10", theme.foreground);
-      osc("11", theme.background);
-      osc("12", theme.cursor);
-
-      // straight to the emulator: these are not output, so must not move the
-      // viewport, ring the bell or set the title as term.write() might
-      if (sequences)
-         term.wasmTerm.write(sequences);
-
-      term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+      // GHOSTTY_IMP: repaint every row through the canvas renderer
+      if (this.renderer && this.wasmTerm)
+         this.renderer.render(this.wasmTerm, true, this.viewportY, this);
    }-*/;
 
    public final native void updateBooleanOption(String option, boolean value) /*-{
@@ -442,18 +412,31 @@ public class XTermNative extends JavaScriptObject
     * have been initialized (see initialize()).
     *
     * @param container HTML element to attach to
-    * @param options terminal settings
+    * @param options terminal settings; with screenReaderMode, the terminal
+    *        is mirrored into the DOM for screen readers (ghostty-a11y.js)
+    * @param accessibleLabel name of the terminal for screen readers
     *
     * @return Native Javascript Terminal object wrapped in a <code>JavaScriptObject</code>.
     */
    public static native XTermNative createTerminal(Element container,
                                                    XTermOptions options,
                                                    boolean clickableLinks,
-                                                   boolean tabMovesFocus) /*-{
+                                                   boolean tabMovesFocus,
+                                                   String accessibleLabel) /*-{
       try {
          var ghostty = $wnd.GhosttyWeb;
-         var nativeTerm_ = new ghostty.Terminal(options);
-         nativeTerm_.rstudioTheme_ = options.theme;
+         var themes = $wnd.RStudioTerminalTheme;
+
+         // the emulator's copy of the options, with the theme in a form it
+         // reads correctly (see ghostty-theme.js)
+         var emulatorOptions = {};
+         for (var key in options) {
+            if (Object.prototype.hasOwnProperty.call(options, key))
+               emulatorOptions[key] = options[key];
+         }
+         emulatorOptions.theme = themes.forEmulator(options.theme);
+
+         var nativeTerm_ = new ghostty.Terminal(emulatorOptions);
          try {
             nativeTerm_.rstudioFitAddon_ = new ghostty.FitAddon();
             nativeTerm_.loadAddon(nativeTerm_.rstudioFitAddon_);
@@ -462,7 +445,28 @@ public class XTermNative extends JavaScriptObject
          }
 
          nativeTerm_.open(container);
+         @org.rstudio.studio.client.workbench.views.terminal.xterm.XTermNative::clearNewEmulator(*)(nativeTerm_);
          nativeTerm_.tabMovesFocus = tabMovesFocus;
+
+         // GHOSTTY_IMP: theme changes are applied in the canvas renderer
+         nativeTerm_.rstudioThemeTracker_ =
+            new themes.ThemeTracker(nativeTerm_.renderer, options.theme);
+
+         // The terminal draws on a canvas, so its text is not in the DOM;
+         // end-to-end tests (e2e/rstudio/utils/terminal.ts) read it, and the
+         // cell geometry, from the emulator found here.
+         container.rstudioTerminal = nativeTerm_;
+
+         // The canvas is invisible to screen readers; mirror the terminal
+         // into the DOM for them, as xterm.js's screen reader mode did.
+         if (options.screenReaderMode && $wnd.RStudioTerminalAccessibility) {
+            try {
+               nativeTerm_.rstudioAccessibility_ =
+                  new $wnd.RStudioTerminalAccessibility.TerminalAccessibility(nativeTerm_, container, accessibleLabel);
+            } catch (error) {
+               console.error("Error creating terminal screen reader support: " + error);
+            }
+         }
 
          // The desktop app recognizes the terminal by this class on the
          // focused element (see src/node/desktop/src/main/context-menu.ts).
@@ -522,6 +526,13 @@ public class XTermNative extends JavaScriptObject
                   detector.registerProvider(wrapWebLinkProvider(builtIn[p]));
             }
          }
+
+         // GHOSTTY_IMP: ghostty-web copies to the clipboard whenever a
+         // selection is made (a mouse drag or double-click). The terminal never
+         // did that, and it would quietly replace what the user had copied, so
+         // copying stays explicit: Ctrl+Shift+C, Cmd+C or the context menu.
+         if (nativeTerm_.selectionManager)
+            nativeTerm_.selectionManager.copyToClipboard = function() {};
 
          // Copy through the browser's copy command, which works over plain
          // http (unlike the async clipboard API), which is how RStudio Server

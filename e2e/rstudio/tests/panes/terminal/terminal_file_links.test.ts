@@ -1,27 +1,30 @@
 // Opening files from paths printed in the Terminal pane with Ctrl/Cmd+Click.
 //
-// The xterm file-link provider sends every token on the hovered line to the
+// The terminal's file-link provider sends every token on the hovered line to the
 // session, which resolves them against the terminal's working directory; only
 // tokens naming an existing file become links, and a link is only marked --
 // and only activates -- while the platform's open-link modifier is held (Cmd
 // on macOS, Ctrl elsewhere).
 
-import type { Locator, Page } from 'playwright';
+import type { Page } from 'playwright';
 import { test, expect } from '@fixtures/rstudio.fixture';
 import { TIMEOUTS } from '@utils/constants';
 import { AceEditor } from '@pages/ace_editor.page';
-import { clearPref, documentCloseAllNoSave, executeCommand, setPref, waitForActiveDocument } from '@utils/commands';
+import { documentCloseAllNoSave, executeCommand, waitForActiveDocument } from '@utils/commands';
 import { seedSandboxFile } from '@utils/files';
 import { rPathLiteral } from '@utils/r';
 import { useSuiteSandbox } from '@utils/sandbox';
-import { captureResult, focusTerminal, killAllTerminals, openTerminal } from '@utils/terminal';
+import {
+  type Point,
+  captureResult,
+  focusTerminal,
+  killAllTerminals,
+  locateTerminalText,
+  openTerminal,
+  terminalLinkUnderPointer,
+} from '@utils/terminal';
 
 const FILE_CONTENT = 'first <- 1\nsecond <- 2\nthird <- 3\n';
-
-// Only the DOM renderer puts terminal rows in the DOM where a printed path can
-// be located and hovered; the default renderer paints to a WebGL canvas.
-const XTERM_ROWS = '.xterm-rows > div';
-const LINK_UNDER_POINTER = '.xterm-screen.xterm-cursor-pointer';
 
 /** The modifier that turns a printed path into a link on this platform. */
 const MODIFIER = process.platform === 'darwin' ? 'Meta' : 'Control';
@@ -31,81 +34,33 @@ async function runInTerminal(page: Page, command: string): Promise<void> {
   await page.keyboard.press('Enter');
 }
 
-interface Point {
-  x: number;
-  y: number;
-}
-
-/** Screen point at the centre of cell `column` of a rendered terminal row. */
-async function cellPoint(row: Locator, column: number): Promise<Point> {
-  // a span holds a run of same-styled cells (e.g. every name on an `ls`
-  // row), so locate the span covering the column and interpolate within it
-  const spans = row.locator('span');
-  const count = await spans.count();
-  let start = 0;
-  for (let i = 0; i < count; i++) {
-    const span = spans.nth(i);
-    const length = ((await span.textContent()) ?? '').length;
-    if (column < start + length) {
-      const box = await span.boundingBox();
-      if (!box) break;
-      const cellWidth = box.width / Math.max(length, 1);
-      return { x: box.x + (column - start + 0.5) * cellWidth, y: box.y + box.height / 2 };
-    }
-    start += length;
-  }
-  throw new Error(`terminal row has no cell at column ${column}`);
-}
-
 /**
- * Find the last occurrence of `text` in the rendered terminal and return a
- * point over it. A long path wraps across rows, and where the wrap falls
- * depends on the path's length, so the match is made against each row joined
- * with the one above it and the point lands on the part of the match in the
- * lower row. Searching from the bottom finds the command's output rather than
- * its echo of the command line.
- */
-async function locateTerminalText(page: Page, text: string): Promise<Point> {
-  const rows = page.locator(XTERM_ROWS);
-  const texts = await rows.allTextContents();
-  for (let i = texts.length - 1; i >= 0; i--) {
-    const above = i > 0 ? texts[i - 1] : '';
-    const index = (above + texts[i]).lastIndexOf(text);
-    if (index === -1) continue;
-
-    // a match lying wholly in the row above is found on that row's turn
-    const end = index + text.length - above.length;
-    if (end <= 0) continue;
-
-    const start = Math.max(0, index - above.length);
-    return cellPoint(rows.nth(i), Math.floor((start + end) / 2));
-  }
-  throw new Error(`terminal text not found: ${text}`);
-}
-
-/**
- * Hover the terminal text `text` until xterm reports a link under the pointer,
+ * Hover the terminal text `text` until the terminal reports a link under the
+ * pointer,
  * and return the point to click. `text` should be the tail of the printed
  * path (the file name), which belongs to a link naming the file wherever the
  * path wraps. The modifier is pressed first, since nothing is marked as a link
  * without it, and is left held for the caller to release.
  *
- * The raw mouse is used throughout: xterm's screen element sits over the row
- * spans, so locator-level hover/click fail their hit-target check. Link
- * resolution is asynchronous and the terminal's working directory reaches the
- * session a little after a `cd`, so an early hover can come back empty; xterm
- * only re-queries a row once the pointer has visited another row, hence the
- * hop to the row above before each retry.
+ * The raw mouse is used throughout, at the cells the text is drawn in (the
+ * terminal is a canvas). Link resolution is asynchronous and the terminal's
+ * working directory reaches the session a little after a `cd`, so an early
+ * hover can come back empty; the terminal keeps a row's links until it is
+ * next written to or the modifier changes, hence releasing and pressing the
+ * modifier again before each retry, with a hop to the row above.
  */
 async function hoverFileLink(page: Page, text: string): Promise<Point> {
   let point: Point = { x: 0, y: 0 };
-  await page.keyboard.down(MODIFIER);
   await expect(async () => {
+    await page.keyboard.up(MODIFIER);
     point = await locateTerminalText(page, text);
-    const rowHeight = (await page.locator(XTERM_ROWS).first().boundingBox())?.height ?? 0;
-    await page.mouse.move(point.x, point.y - rowHeight);
+    // off the row first, so arriving on it is a fresh hover
+    await page.mouse.move(point.x, point.y - 20);
+    await page.keyboard.down(MODIFIER);
     await page.mouse.move(point.x, point.y);
-    await expect(page.locator(LINK_UNDER_POINTER)).toBeVisible({ timeout: TIMEOUTS.settleDelay });
+    await expect
+      .poll(() => terminalLinkUnderPointer(page), { timeout: TIMEOUTS.settleDelay })
+      .toBe(true);
   }).toPass({ timeout: TIMEOUTS.fileOpen });
 
   return point;
@@ -127,11 +82,6 @@ test.describe.serial('Terminal: file paths open with Ctrl/Cmd+Click', () => {
 
   test.beforeAll(async ({ rstudioPage: page }) => {
     isWindows = (await captureResult(page, '.Platform$OS.type')) === 'windows';
-    await setPref(page, 'terminal_renderer', 'dom');
-  });
-
-  test.afterAll(async ({ rstudioPage: page }) => {
-    await clearPref(page, 'terminal_renderer').catch(() => {});
   });
 
   test.beforeEach(async ({ rstudioPage: page }) => {
@@ -206,11 +156,11 @@ test.describe.serial('Terminal: file paths open with Ctrl/Cmd+Click', () => {
 
     // releasing the modifier unmarks the link without the pointer moving
     await page.keyboard.up(MODIFIER);
-    await expect(page.locator(LINK_UNDER_POINTER)).toBeHidden();
+    await expect.poll(() => terminalLinkUnderPointer(page)).toBe(false);
 
     // and pressing it again marks it once more
     await page.keyboard.down(MODIFIER);
-    await expect(page.locator(LINK_UNDER_POINTER)).toBeVisible();
+    await expect.poll(() => terminalLinkUnderPointer(page)).toBe(true);
     await page.keyboard.up(MODIFIER);
   });
 });

@@ -643,6 +643,8 @@
       <exec executable="${node.bin}" failonerror="true">
          <arg value="--test"/>
          <arg value="test/terminal_file_links.test.cjs"/>
+         <arg value="test/terminal_theme.test.cjs"/>
+         <arg value="test/terminal_a11y.test.cjs"/>
       </exec>
       <retry retrycount="3">
          <exec executable="${npm.bin}" dir="${testpage.runner.dir}" resolveexecutable="true" failonerror="true">
