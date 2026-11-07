@@ -183,8 +183,7 @@ public class TerminalSession extends XTermWidget
             addHandlerRegistration(uiPrefs_.blinkingCursor().bind(arg -> updateBooleanOption("cursorBlink", arg)));
             addHandlerRegistration(uiPrefs_.tabKeyMoveFocus().bind(arg -> setTabMovesFocus(arg)));
 
-            // Set up bell handler - bell events are now handled via callback in xterm 6.0
-            // instead of the deprecated bellStyle option
+            // Set up bell handler; the terminal emulator reports bells through a callback
             setBellHandler(() -> {
                // don't play bell if we aren't done loading, don't want beeps if reloading
                // previous output containing '\a'
@@ -194,30 +193,6 @@ public class TerminalSession extends XTermWidget
                   playBell();
                }
             });
-
-            // Handle renderer preference - "canvas" now maps to WebGL (GPU-accelerated),
-            // "dom" uses the default DOM renderer. In xterm 6.0, the canvas renderer was
-            // removed and replaced with WebGL addon.
-            addHandlerRegistration(uiPrefs_.terminalRenderer().bind(arg ->
-            {
-               if (UserPrefsAccessor.TERMINAL_RENDERER_CANVAS.equals(arg))
-               {
-                  enableWebGL(success -> {
-                     if (success)
-                        onResize();
-                  });
-               }
-               else
-               {
-                  disableWebGL();
-               }
-            }));
-
-            // Enable WebGL on startup if preference is set
-            if (UserPrefsAccessor.TERMINAL_RENDERER_CANVAS.equals(uiPrefs_.terminalRenderer().getValue()))
-            {
-               enableWebGL(success -> {});
-            }
 
             addHandlerRegistration(uiPrefs_.fontSizePoints().bind(arg ->
             {

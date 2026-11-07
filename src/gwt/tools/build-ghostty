@@ -1,0 +1,28 @@
+#!/bin/sh
+
+# Pulls ghostty-web -- libghostty-vt (Ghostty's terminal emulation core) compiled
+# to WebAssembly, with an xterm.js-compatible API -- from npm and copies it into
+# the RStudio source tree. The WebAssembly module is embedded in the UMD bundle,
+# so a single script is all the terminal needs at runtime.
+
+set -e
+
+command -v npm >/dev/null 2>&1 || { echo >&2 "npm required but not found: exiting."; exit 1; }
+
+GHOSTTY_WEB_VERSION=0.4.0
+
+if [ -d "./ghostty-web" ]; then
+  rm -rf ghostty-web
+fi
+
+mkdir ghostty-web
+cd ghostty-web
+npm init -y
+npm install --legacy-peer-deps ghostty-web@${GHOSTTY_WEB_VERSION}
+
+TARGET_DIR=../../src/org/rstudio/studio/client/workbench/views/terminal/xterm
+
+# Strip source-map references since they don't work via ClientBundle
+sed '/^\/\/# sourceMappingURL=/d' ./node_modules/ghostty-web/dist/ghostty-web.umd.cjs > ${TARGET_DIR}/ghostty-web.js
+
+echo Done!

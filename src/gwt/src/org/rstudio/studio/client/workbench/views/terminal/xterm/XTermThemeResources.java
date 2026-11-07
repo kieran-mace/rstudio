@@ -23,6 +23,6 @@ public interface XTermThemeResources extends ClientBundle
 {
    XTermThemeResources INSTANCE = GWT.create(XTermThemeResources.class);
 
-   @Source("xterm.css")
-   StaticDataResource xtermcss();
+   @Source("ghostty.css")
+   StaticDataResource terminalcss();
 }

@@ -180,8 +180,6 @@ public class TerminalPreferencesPane extends PreferencesPane
       Label displayLabel = headerLabel(constants_.displayHeaderLabel());
       displayLabel.getElement().getStyle().setMarginTop(8, Unit.PX);
       general.add(displayLabel);
-      chkHardwareAcceleration_ = new CheckBox(constants_.chkHardwareAccelerationLabel());
-      general.add(lessSpaced(chkHardwareAcceleration_));
       chkAudibleBell_ = new CheckBox(constants_.chkAudibleBellLabel());
       general.add(lessSpaced(chkAudibleBell_));
       chkWebLinks_ = new CheckBox(constants_.chkWebLinksLabel());
@@ -358,7 +356,6 @@ public class TerminalPreferencesPane extends PreferencesPane
       chkAudibleBell_.setValue(prefs_.terminalBellStyle().getValue() == UserPrefsAccessor.TERMINAL_BELL_STYLE_SOUND);
       chkWebLinks_.setValue(prefs_.terminalWeblinks().getValue());
       chkFileLinks_.setValue(prefs_.terminalFileLinks().getValue());
-      chkHardwareAcceleration_.setValue(prefs_.terminalRenderer().getValue() == UserPrefsAccessor.TERMINAL_RENDERER_CANVAS);
 
       if (!initialDirectory_.setValue(prefs.terminalInitialDirectory().getValue()))
          initialDirectory_.getListBox().setSelectedIndex(0);
@@ -388,8 +385,6 @@ public class TerminalPreferencesPane extends PreferencesPane
 
       prefs_.terminalBellStyle().setGlobalValue(chkAudibleBell_.getValue() ?
             UserPrefsAccessor.TERMINAL_BELL_STYLE_SOUND : UserPrefsAccessor.TERMINAL_BELL_STYLE_NONE);
-      prefs_.terminalRenderer().setGlobalValue(chkHardwareAcceleration_.getValue() ?
-            UserPrefsAccessor.TERMINAL_RENDERER_CANVAS : UserPrefsAccessor.TERMINAL_RENDERER_DOM);
       prefs_.terminalWeblinks().setGlobalValue(chkWebLinks_.getValue());
       prefs_.terminalFileLinks().setGlobalValue(chkFileLinks_.getValue());
 
@@ -513,7 +508,6 @@ public class TerminalPreferencesPane extends PreferencesPane
    private final TextBox customShellOptions_;
    private final SelectWidget initialDirectory_;
 
-   private final CheckBox chkHardwareAcceleration_;
    private final CheckBox chkAudibleBell_;
    private final CheckBox chkWebLinks_;
    private final CheckBox chkFileLinks_;

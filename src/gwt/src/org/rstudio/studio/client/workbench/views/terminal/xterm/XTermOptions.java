@@ -19,12 +19,11 @@ import jsinterop.annotations.JsPackage;
 import jsinterop.annotations.JsType;
 
 /**
- * xterm.js ITerminalOptions
+ * Terminal options, as taken by ghostty-web's (xterm.js-compatible) Terminal.
  *
- * Note: bellStyle, windowsMode, and rendererType were removed in xterm.js 6.0.
- * - Bell is now handled via the onBell event
- * - windowsMode was deprecated and removed
- * - rendererType is no longer an option; use @xterm/addon-webgl for GPU acceleration
+ * ghostty-web uses cursorBlink, theme, fontFamily, fontSize, smoothScrollDuration,
+ * allowTransparency and scrollback; the remaining fields are xterm.js options it
+ * ignores, kept so the options read the same to either emulator.
  */
 @JsType(isNative = true, namespace = JsPackage.GLOBAL, name = "Object")
 public class XTermOptions
@@ -68,7 +67,7 @@ public class XTermOptions
       options.scrollback = 1000;         // Default scrollback buffer size
 
       // Rendering - draw block/box characters programmatically for perfect alignment
-      // Note: customGlyphs only works with WebGL renderer, not DOM renderer
+      // (xterm.js only; ghostty-web draws every cell on its canvas)
       options.customGlyphs = true;
 
       return options;

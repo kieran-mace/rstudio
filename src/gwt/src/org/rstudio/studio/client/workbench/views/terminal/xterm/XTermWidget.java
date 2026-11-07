@@ -94,9 +94,9 @@ public class XTermWidget extends Widget
    }
 
    /**
-    * Initialize the xterm control. This requires that the XTermWidget's underlying
-    * element is visible (has dimensions) as xterm performs DOM-based measurements
-    * when it starts up.
+    * Initialize the terminal emulator (ghostty-web). This requires that the
+    * XTermWidget's underlying element is visible (has dimensions) as the
+    * emulator measures its font when it starts up.
     */
    public void open(Operation callback)
    {
@@ -106,14 +106,6 @@ public class XTermWidget extends Widget
             terminal_ = XTermNative.createTerminal(getElement(), options_, showWebLinks_, tabMovesFocus_);
             terminal_.addClass("ace_editor");
             terminal_.addClass(FontSizer.getNormalFontSizeClass());
-
-            // Previous versions of xterm.js used 'terminal' css class for styling, and we
-            // have styles based on that. Xterm3 switched to 'xterm' instead of 'terminal',
-            // and an API-based styling technique, but they left in 'terminal' class on root
-            // element. This causes our styles (which are still in the css so we can get them
-            // at runtime and pass to the API) to bleed through when using DOM-based renderer.
-            // Fix by removing the unnecessary 'terminal' class.
-            terminal_.removeClass("terminal");
 
             if (showFileLinks_)
                terminal_.registerFileLinkProvider(XTermWidget.this, BrowseCap.isMacintosh());
@@ -133,7 +125,7 @@ public class XTermWidget extends Widget
    }
 
    /**
-    * Has the underlying terminal emulator UI (xterm) been loaded?
+    * Has the underlying terminal emulator UI (ghostty-web) been loaded?
     */
    public boolean terminalEmulatorLoaded()
    {
@@ -491,20 +483,22 @@ public class XTermWidget extends Widget
    }
 
    /**
-    * Load resources for XTermWidget.
+    * Load resources for XTermWidget: the terminal emulator's script, its
+    * WebAssembly module, and the file link provider.
     *
     * @param command Command to execute after resources are loaded
     */
    public static void load(final Command command)
    {
-      xtermCssLoader_.addCallback(() ->
-            xtermLoader_.addCallback(() ->
-               xtermWebLinksLoader_.addCallback(() ->
-                  xtermFileLinksLoader_.addCallback(() ->
-                     xtermFitLoader_.addCallback(() -> {
-         if (command != null)
-            command.execute();
-      })))));
+      terminalCssLoader_.addCallback(() ->
+            ghosttyLoader_.addCallback(() ->
+               fileLinksLoader_.addCallback(() ->
+                  XTermNative.initialize(
+                     () -> {
+                        if (command != null)
+                           command.execute();
+                     },
+                     error -> Debug.log("Error loading terminal emulator: " + error)))));
    }
 
    public void refresh()
@@ -513,85 +507,16 @@ public class XTermWidget extends Widget
          terminal_.refresh();
    }
 
-   /**
-    * Enable WebGL (GPU-accelerated) rendering. Loads the WebGL addon if not already loaded.
-    * @param callback Called with true if WebGL was enabled, false if it failed
-    */
-   public void enableWebGL(CommandWithArg<Boolean> callback)
-   {
-      if (!terminalEmulatorLoaded())
-      {
-         callback.execute(false);
-         return;
-      }
-
-      // If WebGL is already loaded, nothing to do
-      if (terminal_.isWebGLAddonLoaded())
-      {
-         callback.execute(true);
-         return;
-      }
-
-      // Load WebGL resources then enable the addon
-      xtermWebGLLoader_.addCallback(() -> {
-         boolean success = terminal_.loadWebGLAddon();
-         if (success)
-         {
-            // If a lost WebGL context (GPU crash, driver reset, the browser
-            // reclaiming a context) is not restored by the browser within
-            // the addon's ~3s grace window, the addon fires onContextLoss
-            // and cannot recover; dispose it and fall back to the DOM
-            // renderer so the terminal keeps rendering.
-            terminal_.onWebGLContextLoss(() -> {
-               Debug.log("Terminal WebGL context lost; falling back to DOM renderer");
-               disableWebGL();
-            });
-            onResize(); // Refresh after renderer change
-         }
-         callback.execute(success);
-      });
-   }
-
-   /**
-    * Disable WebGL rendering, reverting to DOM renderer.
-    */
-   public void disableWebGL()
-   {
-      if (terminalEmulatorLoaded() && terminal_.isWebGLAddonLoaded())
-      {
-         terminal_.unloadWebGLAddon();
-         onResize(); // Refresh after renderer change
-      }
-   }
-
-   /**
-    * Check if WebGL rendering is currently enabled.
-    * @return true if WebGL is active
-    */
-   public boolean isWebGLEnabled()
-   {
-      return terminalEmulatorLoaded() && terminal_.isWebGLAddonLoaded();
-   }
-
    private static final int RESIZE_DELAY = 50;
 
-   private static final ExternalStyleSheetLoader xtermCssLoader_ =
-         new ExternalStyleSheetLoader(XTermThemeResources.INSTANCE.xtermcss().getSafeUri().asString());
+   private static final ExternalStyleSheetLoader terminalCssLoader_ =
+         new ExternalStyleSheetLoader(XTermThemeResources.INSTANCE.terminalcss().getSafeUri().asString());
 
-   private static final ExternalJavaScriptLoader xtermLoader_ =
-         new ExternalJavaScriptLoader(XTermResources.INSTANCE.xtermjs().getSafeUri().asString());
+   private static final ExternalJavaScriptLoader ghosttyLoader_ =
+         new ExternalJavaScriptLoader(XTermResources.INSTANCE.ghosttyjs().getSafeUri().asString());
 
-   private static final ExternalJavaScriptLoader xtermFitLoader_ =
-         new ExternalJavaScriptLoader(XTermResources.INSTANCE.xtermfitjs().getSafeUri().asString());
-
-   private static final ExternalJavaScriptLoader xtermWebLinksLoader_ =
-      new ExternalJavaScriptLoader(XTermResources.INSTANCE.xtermweblinksjs().getSafeUri().asString());
-
-   private static final ExternalJavaScriptLoader xtermFileLinksLoader_ =
-      new ExternalJavaScriptLoader(XTermResources.INSTANCE.xtermfilelinksjs().getSafeUri().asString());
-
-   private static final ExternalJavaScriptLoader xtermWebGLLoader_ =
-      new ExternalJavaScriptLoader(XTermResources.INSTANCE.xtermwebgljs().getSafeUri().asString());
+   private static final ExternalJavaScriptLoader fileLinksLoader_ =
+         new ExternalJavaScriptLoader(XTermResources.INSTANCE.filelinksjs().getSafeUri().asString());
 
    private XTermNative terminal_;
    private boolean initialized_ = false;

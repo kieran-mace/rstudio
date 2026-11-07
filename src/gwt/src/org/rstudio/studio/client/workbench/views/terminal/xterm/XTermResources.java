@@ -22,18 +22,11 @@ public interface XTermResources extends ClientBundle
 {
    XTermResources INSTANCE = GWT.create(XTermResources.class);
 
-   @Source("xterm.js")
-   StaticDataResource xtermjs();
-
-   @Source("fit.js")
-   StaticDataResource xtermfitjs();
-
-   @Source("web-links.js")
-   StaticDataResource xtermweblinksjs();
+   // ghostty-web: libghostty-vt compiled to WebAssembly (embedded in the
+   // script), with an xterm.js-compatible API; see tools/build-ghostty
+   @Source("ghostty-web.js")
+   StaticDataResource ghosttyjs();
 
    @Source("file-links.js")
-   StaticDataResource xtermfilelinksjs();
-
-   @Source("webgl.js")
-   StaticDataResource xtermwebgljs();
+   StaticDataResource filelinksjs();
 }

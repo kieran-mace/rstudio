@@ -13,7 +13,7 @@
  *
  */
 
-// An xterm.js link provider that turns file paths printed in the terminal
+// A ghostty-web link provider that turns file paths printed in the terminal
 // (git status output, compiler diagnostics, ls listings, ...) into links that
 // open the file in RStudio with Ctrl+Click (Cmd+Click on macOS).
 //
@@ -21,6 +21,18 @@
 // hovered line is a candidate, and the host decides which of them name an
 // existing file relative to the terminal's working directory. Only those
 // become links, so plain words never get underlined.
+//
+// ghostty-web's link API follows xterm.js's, with these differences (read
+// from ghostty-web 0.4.0 -- the version pinned in src/gwt/tools/build-ghostty;
+// re-check them, marked GHOSTTY_IMP, when it is upgraded):
+//
+// - rows passed to provideLinks() and link ranges are 0-based, and a range's
+//   end column is inclusive;
+// - a link is told about the pointer through hover(isHovered);
+// - every hovered link is underlined, with no per-link decorations;
+// - the links a provider returns for a row are cached until the terminal is
+//   next written to, and the provider must answer every request (rows are
+//   scanned one provider at a time, awaiting each reply).
 //
 // The wrapped-line and string-to-cell mapping logic mirrors LinkComputer in
 // xterm's web-links addon (MIT licensed, https://github.com/xtermjs/xterm.js).
@@ -36,9 +48,8 @@ var MAX_CANDIDATES = 64;
 var MAX_CANDIDATE_LENGTH = 512;
 
 // Resolved lines are remembered briefly so sweeping the mouse over the same
-// output does not re-query the host, and so a line whose reply xterm dropped
-// (it discards replies arriving while the mouse is outside the terminal)
-// still gets its links when the mouse returns.
+// output, or releasing and pressing the modifier again, does not re-query
+// the host.
 var CACHE_TTL_MS = 5000;
 var CACHE_MAX_ENTRIES = 64;
 
@@ -61,31 +72,22 @@ var POSITION_PATTERNS = [
 
 var CLOSERS = { ")": "(", "]": "[", "}": "{", ">": "<" };
 
-// Links are only decorated -- and only activate -- while the platform's
-// open-link modifier is held, so hovering ordinary output does not light up
-// every word that happens to name a file. xterm reads a link's decorations
-// when a hover begins and then swaps in live accessors of its own, so the
-// state at hover time comes from a getter and later changes are written
-// through xterm's object (Linkifier._handleNewLink, read from @xterm/xterm
-// 6.0.0 -- the version pinned in src/gwt/tools/build-xterm). Only one link is
-// ever hovered, so one tracker serves every terminal; it records the owning
-// provider too, so a terminal torn down mid-hover can let go of its link.
+// File links only exist -- and so are only underlined, and only activate --
+// while the platform's open-link modifier is held, so hovering ordinary
+// output does not light up every word that happens to name a file. ghostty
+// underlines whatever link is hovered, so instead of decorating links on and
+// off, a provider offers none while the modifier is up, and each provider's
+// host is told when the modifier changes so it can have the hovered row
+// scanned again. The state is shared by every terminal in the document.
 var modifier = {
    isMac: false,
    held: false,
-   link: null,
-   owner: null
+   providers: []
 };
 
 function hasModifier(event)
 {
    return modifier.isMac ? !!event.metaKey : !!event.ctrlKey;
-}
-
-function forgetHoveredLink()
-{
-   modifier.link = null;
-   modifier.owner = null;
 }
 
 function setModifierHeld(held)
@@ -95,31 +97,14 @@ function setModifierHeld(held)
 
    modifier.held = held;
 
-   // writing through the accessors xterm installed repaints the hovered link
-   var link = modifier.link;
-   if (link && link.decorations)
+   // copy: a host may tear its terminal (and so its provider) down in reply
+   var providers = modifier.providers.slice();
+   for (var i = 0; i < providers.length; i++)
    {
-      link.decorations.pointerCursor = held;
-      link.decorations.underline = held;
+      var host = providers[i]._host;
+      if (host.modifierChanged)
+         host.modifierChanged(held);
    }
-}
-
-// The decorations xterm reads when a hover begins; getters, because the
-// modifier may have been pressed or released since the link was built. Writes
-// are ignored: xterm owns the decorations once the hover has started.
-function createDecorations()
-{
-   var property = {
-      configurable: true,
-      enumerable: true,
-      get: function() { return modifier.held; },
-      set: function() {}
-   };
-
-   var decorations = {};
-   Object.defineProperty(decorations, "pointerCursor", property);
-   Object.defineProperty(decorations, "underline", property);
-   return decorations;
 }
 
 // Watch the modifier, so a hovered link lights up as soon as it is pressed and
@@ -161,20 +146,27 @@ function FileLinkProvider(terminal, host)
 {
    this._terminal = terminal;
    this._host = host;
-   this._requestId = 0;
    this._cacheGeneration = 0;
    this._cache = {};
    this._cacheKeys = [];
+   this._hovered = null;
 
+   modifier.providers.push(this);
    trackModifier(terminal.element, !!host.isMac);
 }
 
-FileLinkProvider.prototype.provideLinks = function(bufferLineNumber, callback)
+// GHOSTTY_IMP: `row` is 0-based, and `callback` must be called exactly once.
+FileLinkProvider.prototype.provideLinks = function(row, callback)
 {
-   var requestId = ++this._requestId;
+   if (!modifier.held)
+   {
+      callback(undefined);
+      return;
+   }
+
    var terminal = this._terminal;
    var buffer = terminal.buffer.active;
-   var window = getWindowedLineStrings(terminal, bufferLineNumber - 1);
+   var window = getWindowedLineStrings(terminal, row);
    var text = window.lines.join("");
    var matches = findCandidates(text);
    if (matches.length === 0)
@@ -196,26 +188,19 @@ FileLinkProvider.prototype.provideLinks = function(bufferLineNumber, callback)
    this._host.resolve(candidates, function(resolved) {
       // A cwd change invalidates pending resolutions as well as cached ones.
       if (cacheGeneration !== self._cacheGeneration)
+      {
+         callback(undefined);
          return;
+      }
 
       resolved = resolved || [];
       self._storeCache(text, resolved);
 
-      // xterm records whatever reply arrives against the line it is
-      // currently asking about, so a reply for a line the mouse has since
-      // left must be dropped rather than delivered late.
-      if (requestId !== self._requestId)
-         return;
-
       // The result can be cached by text, but its offsets only apply while
       // the captured rows still contain that text in the same buffer.
-      if (terminal.buffer.active !== buffer)
-         return;
-      var currentWindow = getWindowedLineStrings(terminal, bufferLineNumber - 1);
-      if (currentWindow.startLine !== window.startLine ||
-          currentWindow.lines.length !== window.lines.length ||
-          currentWindow.lines.some(function(line, index) { return line !== window.lines[index]; }))
+      if (terminal.buffer.active !== buffer || !sameWindow(window, getWindowedLineStrings(terminal, row)))
       {
+         callback(undefined);
          return;
       }
 
@@ -247,7 +232,6 @@ FileLinkProvider.prototype._createLink = function(range, match, path)
    var link = {
       range: range,
       text: match.text,
-      decorations: createDecorations(),
       activate: function(event) {
          if (event.button !== 0 || !hasModifier(event))
             return;
@@ -268,34 +252,42 @@ FileLinkProvider.prototype._createLink = function(range, match, path)
                host.open(fresh, match.line, match.column);
          });
       },
-      hover: function() {
-         modifier.link = link;
-         modifier.owner = self;
-         host.hover(path);
-      },
-      leave: function() {
-         if (modifier.link === link)
-            forgetHoveredLink();
-
-         // put our own decorations back, so a later hover of this same link
-         // consults the modifier again rather than xterm's remembered state
-         link.decorations = createDecorations();
-         host.leave();
+      // GHOSTTY_IMP: one call for both the pointer arriving and leaving
+      hover: function(isHovered) {
+         if (isHovered)
+         {
+            self._hovered = link;
+            if (host.hover)
+               host.hover(path);
+         }
+         else if (self._hovered === link)
+         {
+            self._hovered = null;
+            if (host.leave)
+               host.leave();
+         }
       }
    };
 
    return link;
 };
 
-// A terminal can be torn down with a link still hovered: xterm's linkifier
-// does not call leave() when it is disposed, and an element detached from the
-// document gets no mouseleave either. The hovered link closes over the
-// provider and the host widget, so without this the dead terminal would be
-// kept alive until some other link happened to be hovered.
+// A terminal can be torn down with a link still hovered: an element detached
+// from the document gets no mouseleave, so the link is never told the pointer
+// left. Let go of the hover, and stop hearing about the modifier, so the dead
+// terminal is not kept alive.
 FileLinkProvider.prototype.dispose = function()
 {
-   if (modifier.owner === this)
-      forgetHoveredLink();
+   if (this._hovered)
+   {
+      this._hovered = null;
+      if (this._host.leave)
+         this._host.leave();
+   }
+
+   var index = modifier.providers.indexOf(this);
+   if (index !== -1)
+      modifier.providers.splice(index, 1);
 };
 
 FileLinkProvider.prototype.clearCache = function()
@@ -332,6 +324,13 @@ FileLinkProvider.prototype._storeCache = function(text, resolved)
    }
    this._cache[text] = { time: Date.now(), resolved: resolved };
 };
+
+function sameWindow(a, b)
+{
+   return a.startLine === b.startLine &&
+          a.lines.length === b.lines.length &&
+          a.lines.every(function(line, index) { return line === b.lines[index]; });
+}
 
 // Split a line into candidate tokens. Each candidate records where it sits in
 // the line (so it can be mapped back to buffer cells), the path to validate,
@@ -443,6 +442,26 @@ function repeatSpace(count)
    return new Array(count + 1).join(" ");
 }
 
+
+// The text of a buffer row, one string character per cell (two for a
+// character outside the BMP), as xterm's translateToString() produces it.
+// GHOSTTY_IMP: ghostty-web's own translateToString() yields nothing for an
+// empty cell, which would shift every later offset, so empty cells are
+// rendered as spaces here; the trailing half of a wide character has width 0
+// and contributes nothing, as in xterm.
+function lineToString(line, trimRight)
+{
+   var text = "";
+   for (var i = 0; i < line.length; i++)
+   {
+      var cell = line.getCell(i);
+      if (!cell || cell.getWidth() === 0)
+         continue;
+      text += cell.getChars() || " ";
+   }
+   return trimRight ? text.replace(/ +$/, "") : text;
+}
+
 // Collect the run of wrapped rows the given row belongs to, so a path that
 // wraps across rows is seen whole. Rows other than the last keep their
 // trailing whitespace so string offsets stay one-to-one with buffer cells.
@@ -455,7 +474,7 @@ function getWindowedLineStrings(terminal, lineIndex)
    if (!line)
       return { lines: lines, startLine: startLine };
 
-   var current = line.translateToString(true);
+   var current = lineToString(line, true);
    var chars = 0;
    var previous;
    var text;
@@ -471,7 +490,7 @@ function getWindowedLineStrings(terminal, lineIndex)
             break;
 
          startLine--;
-         text = previous.translateToString(false);
+         text = lineToString(previous, false);
          chars += text.length;
          lines.push(text);
          if (!previous.isWrapped)
@@ -482,7 +501,7 @@ function getWindowedLineStrings(terminal, lineIndex)
 
    var next = buffer.getLine(lineIndex + 1);
    if (next && next.isWrapped)
-      current = line.translateToString(false);
+      current = lineToString(line, false);
    lines.push(current);
 
    chars = 0;
@@ -495,7 +514,7 @@ function getWindowedLineStrings(terminal, lineIndex)
 
       nextIndex++;
       var following = buffer.getLine(nextIndex + 1);
-      text = next.translateToString(!(following && following.isWrapped));
+      text = lineToString(next, !(following && following.isWrapped));
       chars += text.length;
       lines.push(text);
    }
@@ -509,7 +528,6 @@ function getWindowedLineStrings(terminal, lineIndex)
 function mapStringIndex(terminal, lineIndex, cellIndex, stringIndex)
 {
    var buffer = terminal.buffer.active;
-   var cell = buffer.getNullCell();
    var start = cellIndex;
 
    while (stringIndex)
@@ -520,7 +538,10 @@ function mapStringIndex(terminal, lineIndex, cellIndex, stringIndex)
 
       for (var i = start; i < line.length; i++)
       {
-         line.getCell(i, cell);
+         var cell = line.getCell(i);
+         if (!cell)
+            return [-1, -1];
+
          var chars = cell.getChars();
          if (cell.getWidth())
          {
@@ -531,12 +552,9 @@ function mapStringIndex(terminal, lineIndex, cellIndex, stringIndex)
             if (i === line.length - 1 && chars === "")
             {
                var nextLine = buffer.getLine(lineIndex + 1);
-               if (nextLine && nextLine.isWrapped)
-               {
-                  nextLine.getCell(0, cell);
-                  if (cell.getWidth() === 2)
-                     stringIndex += 1;
-               }
+               var first = nextLine && nextLine.isWrapped && nextLine.getCell(0);
+               if (first && first.getWidth() === 2)
+                  stringIndex += 1;
             }
          }
          if (stringIndex < 0)
@@ -550,6 +568,7 @@ function mapStringIndex(terminal, lineIndex, cellIndex, stringIndex)
    return [lineIndex, start];
 }
 
+// GHOSTTY_IMP: link ranges are 0-based, with an inclusive end column.
 function computeRange(terminal, startLine, index, length)
 {
    var start = mapStringIndex(terminal, startLine, 0, index);
@@ -565,8 +584,8 @@ function computeRange(terminal, startLine, index, length)
       end = [end[0] - 1, terminal.cols];
 
    return {
-      start: { x: start[1] + 1, y: start[0] + 1 },
-      end: { x: end[1], y: end[0] + 1 }
+      start: { x: start[1], y: start[0] },
+      end: { x: end[1] - 1, y: end[0] }
    };
 }
 
